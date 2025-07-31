@@ -12,16 +12,12 @@
 #include <algorithm>
 #include <numeric>
 #include <set>
+#include <chrono>
+
+#include "wsbm_io_bin.hpp"   // node_t, load_wsbm_bin(...), free_graph(...)
+#include "WSBMGenerator.hpp" // only for DistributionType in the clustering signature (if needed)
 
 using namespace std;
-
-struct node_t {
-    int id;
-    double weight;
-    node_t* next;
-};
-
-enum class DistributionType { GAUSSIAN, EXPONENTIAL, POISSON };
 
 double diverg_phi(double y, double nu, DistributionType distribution) {
     int theta = 1;
@@ -236,32 +232,28 @@ vector<unsigned int> bregman_clustering(
     vector<double>& nu,                             // average node attribute per community
     DistributionType distribution                            // distribution type
 ) {
+    chrono::steady_clock::time_point begin = chrono::steady_clock::now();      
     vector<unsigned int> z_new(z.size(), 0);  // Initialize z_new with zeros
     int max_iterations = 20;  // Maximum number of iterations
     int iterations = 0;
 
     bool converged = false;
     while (!converged) {
-        // 3: Update parameters
         update_parameters(A, Y, z, edge_count, edge_weight, node_count, node_attribute, neighbor_count, p, mu, nu);
 
-        // 5-9: Compute maximum assignment and update community memberships
         compute_maximum_assignment(A, Y, z, edge_count, edge_weight, node_count, node_attribute, neighbor_count, p, mu, nu, z_new, distribution);
 
-        // 10: Check for convergence
         converged = (max_iterations <= iterations); // maximum number of iterations OR if there is no change OR number of changes is smaller than C we stop
 
-        // Update z with z_new
         z = z_new;
 
-        // Increment the number of iterations
         iterations++;
     }
-
+    chrono::steady_clock::time_point end = chrono::steady_clock::now();
+    cout << "Time difference = " << chrono::duration_cast<chrono::milliseconds>(end - begin).count() << "[ms]" << endl;
     return z;
 }
 void add_edge(vector<node_t*>& A, int u, int v, double weight) {
-    // Create a new node_t for v and add it to u's adjacency list
     node_t* new_node = new node_t{v, weight, nullptr};
     if (A[u] == nullptr) {
         A[u] = new_node;
@@ -317,132 +309,6 @@ void print_graph(const vector<node_t*>& graph) {
     }
 }
 
-class WSBMGenerator {
-public:
-    WSBMGenerator(int n, int k, DistributionType attr_dist, DistributionType edge_dist, DistributionType weight_dist,
-                  double attr_param1, double attr_param2, double edge_param1, double edge_param2,
-                  double weight_param1, double weight_param2, double min_, double max_)
-        : attribute_dist(attr_dist), edge_dist(edge_dist), weight_dist(weight_dist),
-          attr_param1(attr_param1), attr_param2(attr_param2), edge_param1(edge_param1), edge_param2(edge_param2),
-          weight_param1(weight_param1), weight_param2(weight_param2), min_(min_), max_(max_) {
-        n_clusters = k;  // Number of clusters (communities)
-        N = n;
-
-        nodes_per_cluster = n / k;
-
-        // Define intra- and inter-cluster probabilities
-        pout = 0.15;
-        pin = 0.3;
-
-        // Generate the block probability matrix
-        generate_probability_matrix();
-        generate_weight_centers();
-    }
-
-    // Function to generate WSBM
-    tuple<vector<node_t*>, vector<double>, vector<int>> generate_WSBM(bool complete_graph = false) {
-        vector<node_t*> graph(N, nullptr);
-        node_attributes.resize(N);
-        vector<int> Z_true(N);
-
-        // Assign node attributes based on the chosen distribution
-        for (int i = 0; i < N; ++i) {
-            node_attributes[i] = generate_value(attribute_dist, attr_param1, attr_param2);
-            Z_true[i] = i / nodes_per_cluster;
-        }
-
-        // Simulate the stochastic block model
-        for (int i = 0; i < N; ++i) {
-            for (int j = i + 1; j < N; ++j) {
-                int block_i = i / nodes_per_cluster;
-                int block_j = j / nodes_per_cluster;
-
-                double base_prob = (complete_graph) ? 1.0 : probability_matrix[block_i][block_j];
-                double modified_prob = base_prob * generate_value(edge_dist, edge_param1, edge_param2);
-
-                if (random_prob() <= modified_prob) {
-                    // Assign weight based on the block interactions
-                    double mean = weight_centers[block_i][block_j];
-                    double weight = generate_value(weight_dist, weight_param1, weight_param2);
-
-                    // Add the edge to the adjacency list (undirected graph, so add both directions)
-                    add_edge(graph, i, j, weight);
-                    add_edge(graph, j, i, weight);
-                }
-            }
-        }
-
-        return make_tuple(graph, node_attributes, Z_true);
-    }
-
-    // Function to print node attributes
-    void print_node_attributes() {
-        for (int i = 0; i < node_attributes.size(); ++i) {
-            cout << "Node " << i << ": Attribute = " << node_attributes[i] << endl;
-        }
-    }
-
-private:
-    int n_clusters;                    // Number of clusters
-    int nodes_per_cluster;             // Nodes per cluster
-    int N;                             // Total number of nodes
-    double pout, pin;                  // Inter- and intra-cluster probabilities
-    double attr_param1, attr_param2;   // Parameters for attribute distribution
-    double edge_param1, edge_param2;   // Parameters for edge distribution
-    double weight_param1, weight_param2; // Parameters for weight distribution
-    double min_, max_;                 // Minimum and maximum weights for distributions
-    vector<double> node_attributes;  // Node attributes
-    vector<vector<double>> probability_matrix;  // Block probability matrix
-    vector<vector<double>> weight_centers;      // Weight centers for each block
-    DistributionType attribute_dist;   // Distribution type for node attributes
-    DistributionType edge_dist;        // Distribution type for edge probabilities
-    DistributionType weight_dist;      // Distribution type for edge weights
-
-    // Helper function to generate the block probability matrix
-    void generate_probability_matrix() {
-        probability_matrix.resize(n_clusters, vector<double>(n_clusters, pout));
-        for (int i = 0; i < n_clusters; ++i) {
-            probability_matrix[i][i] = pin;
-        }
-    }
-
-    // Helper function to generate the weight centers for the block interactions
-    void generate_weight_centers() {
-        weight_centers.resize(n_clusters, vector<double>(n_clusters, 0.0));
-        int index = 0;
-        for (int i = 0; i < n_clusters; ++i) {
-            for (int j = i; j < n_clusters; ++j) {
-                double value = min_ + (max_ - min_) * (index / double(n_clusters * (n_clusters + 1) / 2));
-                weight_centers[i][j] = value;
-                weight_centers[j][i] = value;  // Symmetric
-                index++;
-            }
-        }
-    }
-
-    // Helper function to generate a random value based on the selected distribution
-    double generate_value(DistributionType dist, double param1, double param2) {
-        switch (dist) {
-            case DistributionType::GAUSSIAN:
-                return generate_gaussian(param1, param2);
-            case DistributionType::EXPONENTIAL:
-                return generate_exponential(param1);
-            case DistributionType::POISSON:
-                return generate_poisson(param1);
-            default:
-                return 0.0;
-        }
-    }
-
-    // Helper function to generate a random probability between 0 and 1
-    double random_prob() {
-        random_device rd;
-        mt19937 gen(rd());
-        uniform_real_distribution<> dis(0.0, 1.0);
-        return dis(gen);
-    }
-};
-
 // Function to initialize the Z vector with random community assignments
 vector<unsigned int> initialize_Z(int num_nodes, int num_clusters) {
     vector<unsigned int> Z(num_nodes);
@@ -457,33 +323,34 @@ vector<unsigned int> initialize_Z(int num_nodes, int num_clusters) {
     return Z;
 }
 
-double compute_cluster_accuracy(const std::vector<unsigned int>& Z_pred,
-                                const std::vector<int>& Z_true) {
+double compute_cluster_accuracy(const vector<unsigned int>& Z_pred,
+                                const vector<unsigned int>& Z_true) {
     if (Z_pred.size() != Z_true.size()) {
-        std::cerr << "Error: Z_pred and Z_true must be the same length!" << std::endl;
+        cerr << "Error: Z_pred and Z_true must be the same length!" << endl;
         return 0.0;
     }
 
     int n = Z_pred.size();
 
     // Get unique labels
-    std::set<int> true_label_set(Z_true.begin(), Z_true.end());
-    std::set<int> pred_label_set(Z_pred.begin(), Z_pred.end());
+    set<int> true_label_set(Z_true.begin(), Z_true.end());
+    set<int> pred_label_set(Z_pred.begin(), Z_pred.end());
 
     if (true_label_set.size() != pred_label_set.size()) {
-        std::cerr << "Error: Number of clusters in Z_true and Z_pred must match!" << std::endl;
+        cerr << "Error: Number of clusters in Z_true and Z_pred must match!" << endl;
+        cout << "Z_true" << true_label_set.size() << "Z_pred" << pred_label_set.size() << endl;
         return 0.0;
     }
 
-    std::vector<int> true_labels(true_label_set.begin(), true_label_set.end());
-    std::vector<int> pred_labels(pred_label_set.begin(), pred_label_set.end());
+    vector<int> true_labels(true_label_set.begin(), true_label_set.end());
+    vector<int> pred_labels(pred_label_set.begin(), pred_label_set.end());
 
-    std::vector<int> perm = pred_labels;
+    vector<int> perm = pred_labels;
     double best_accuracy = 0.0;
 
     do {
         // Map predicted label to true label based on current permutation
-        std::unordered_map<int, int> label_map;
+        unordered_map<int, int> label_map;
         for (size_t i = 0; i < perm.size(); ++i) {
             label_map[perm[i]] = true_labels[i];
         }
@@ -496,22 +363,134 @@ double compute_cluster_accuracy(const std::vector<unsigned int>& Z_pred,
         }
 
         double accuracy = static_cast<double>(correct) / n;
-        best_accuracy = std::max(best_accuracy, accuracy);
+        best_accuracy = max(best_accuracy, accuracy);
 
-    } while (std::next_permutation(perm.begin(), perm.end()));
+    } while (next_permutation(perm.begin(), perm.end()));
 
     return best_accuracy;
 }
 
+double log2_safe(double x) {
+    return x > 0 ? log(x) / log(2) : 0;
+}
 
-int main() {
-    // 1-2: Initialize adjacency list (A) and attribute vector Y
-    int n = 300; // number of nodes
-    int k = 3;  // number of communities
+double entropy(const unordered_map<int, int>& label_counts, int total) {
+    double H = 0.0;
+    for (const auto& [label, count] : label_counts) {
+        double p = static_cast<double>(count) / total;
+        H -= p * log2_safe(p);
+    }
+    return H;
+}
+
+double normalized_mutual_information(const vector<unsigned int>& Z_pred,
+                                     const vector<unsigned int>& Z_true) {
+    if (Z_pred.size() != Z_true.size() || Z_pred.empty())
+        throw invalid_argument("Vectors must be of the same non-zero length");
+
+    const int N = Z_pred.size();
+
+    unordered_map<int, int> true_counts;
+    unordered_map<int, int> pred_counts;
+    unordered_map<int, unordered_map<int, int>> joint_counts;
+
+    for (int i = 0; i < N; ++i) {
+        int true_label = Z_true[i];
+        int pred_label = Z_pred[i];
+        true_counts[true_label]++;
+        pred_counts[pred_label]++;
+        joint_counts[true_label][pred_label]++;
+    }
+
+    double I = 0.0;
+    for (const auto& [true_label, pred_map] : joint_counts) {
+        for (const auto& [pred_label, joint_count] : pred_map) {
+            double p_ij = static_cast<double>(joint_count) / N;
+            double p_i = static_cast<double>(true_counts[true_label]) / N;
+            double p_j = static_cast<double>(pred_counts[pred_label]) / N;
+            I += p_ij * log2_safe(p_ij / (p_i * p_j));
+        }
+    }
+
+    double H_true = entropy(true_counts, N);
+    double H_pred = entropy(pred_counts, N);
+
+    if (H_true == 0 || H_pred == 0)
+        return 0.0;
+
+    return I / sqrt(H_true * H_pred);
+}
+
+inline double comb2(int n) {
+    return n < 2 ? 0.0 : (n * (n - 1)) / 2.0;
+}
+
+double adjusted_rand_index(const std::vector<unsigned int>& Z_pred,
+                           const std::vector<unsigned int>& Z_true) {
+    if (Z_pred.size() != Z_true.size() || Z_pred.empty())
+        throw std::invalid_argument("Vectors must be of the same non-zero length");
+
+    const int N = Z_pred.size();
+
+    // Count true and predicted labels
+    std::unordered_map<int, int> true_counts;
+    std::unordered_map<int, int> pred_counts;
+    std::unordered_map<int, std::unordered_map<int, int>> contingency;
+
+    for (int i = 0; i < N; ++i) {
+        int true_label = Z_true[i];
+        int pred_label = Z_pred[i];
+        true_counts[true_label]++;
+        pred_counts[pred_label]++;
+        contingency[true_label][pred_label]++;
+    }
+
+    double sum_comb_c = 0.0;
+    for (const auto& [true_label, pred_map] : contingency) {
+        for (const auto& [pred_label, count] : pred_map) {
+            sum_comb_c += comb2(count);
+        }
+    }
+
+    double sum_comb_true = 0.0;
+    for (const auto& [label, count] : true_counts) {
+        sum_comb_true += comb2(count);
+    }
+
+    double sum_comb_pred = 0.0;
+    for (const auto& [label, count] : pred_counts) {
+        sum_comb_pred += comb2(count);
+    }
+
+    double comb_n = comb2(N);
+    if (comb_n == 0.0) return 1.0; // Perfect match for single elements
+
+    double expected_index = (sum_comb_true * sum_comb_pred) / comb_n;
+    double max_index = 0.5 * (sum_comb_true + sum_comb_pred);
+    double ARI = (sum_comb_c - expected_index) / (max_index - expected_index);
+
+    return ARI;
+}
+
+static void usage(const char* prog) {
+    std::cerr << "Usage: " << prog << " in_file n k\n";
+    std::cerr << "Example: " << prog << " wsbm_data.bin 100 4\n";
+}
+
+int main(int argc, char** argv) {
+    if (argc != 4) { usage(argv[0]); return 1; }
+
+    std::string in_path = argv[1];
+    int n = std::atoi(argv[2]);
+    int k = std::atoi(argv[3]);
+
+    if (n <= 0 || k <= 0) {
+        usage(argv[0]); return 1;
+    }
 
     vector<node_t*> A(n, nullptr);
     vector<double> Y(n);
-    vector<int> Z_true(n);
+    vector<unsigned int> Z_true(n);
 
     // 3: Initialize initial community assignments (z)
     vector<unsigned int> z = initialize_Z(n, k);  // Example initial clustering
@@ -545,38 +524,21 @@ int main() {
     //Distribution type
     DistributionType distribution = DistributionType::GAUSSIAN; // 1: Gaussian, 2: Poisson, 3: Exponential
 
-    // Example parameters for weight generation and attribute distributions
-    DistributionType attr_dist = DistributionType::GAUSSIAN;    // Node attributes distribution
-    DistributionType edge_dist = DistributionType::GAUSSIAN;    // Edge probabilities distribution
-    DistributionType weight_dist = DistributionType::GAUSSIAN;   // Weight distribution
-    double attr_param1 = 0.0;     // Mean for Gaussian distribution (attributes)
-    double attr_param2 = 1.0;     // Stddev for Gaussian distribution (attributes)
-    double edge_param1 = 0.0;     // Mean for Gaussian distribution (edges)
-    double edge_param2 = 1.0;    // Stddev for Gaussian distribution (edges)
-    double weight_param1 = 0.0;   // Mean for Poisson distribution (weights)
-    double weight_param2 = 1.0;   // Not used for Poisson distribution
-    double min_ = 1.0;            // Minimum weight
-    double max_ = 5.0;            // Maximum weight
+    try {
+        load_wsbm_bin(in_path, A, Y, Z_true);
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to load '" << in_path << "': " << e.what() << "\n";
+        return 1;
+    }
 
-    // Create the WSBM generator
-    WSBMGenerator generator(n, k, attr_dist, edge_dist, weight_dist, attr_param1, attr_param2, edge_param1, edge_param2, weight_param1, weight_param2, min_, max_);
-
-    // Generate the WSBM
-    tie(A, Y, Z_true) = generator.generate_WSBM();
-
-    // Print the generated graph
-    print_graph(A);
 
     // 5: Call the bregman_clustering function
     vector<unsigned int> final_assignment = bregman_clustering(A, Y, z, edge_count, edge_weight, node_count, node_attribute, neighbor_count, p, mu, nu, distribution);
 
-    // Output the final community assignment
-    cout << "Final community assignment:" << endl;
-    for (int i = 0; i < final_assignment.size(); ++i) {
-        cout << "Node " << i << ": Community " << final_assignment[i] << endl;
-    }
+    cout << "Accuracy: " << compute_cluster_accuracy(final_assignment, Z_true) << endl;
+    cout << "NMI: " << normalized_mutual_information(final_assignment, Z_true) << endl;
+    cout << "ARI: " << adjusted_rand_index(final_assignment, Z_true) << endl;
 
-    cout << "Accuracy" << compute_cluster_accuracy(final_assignment, Z_true);
 
     // Cleanup dynamically allocated memory (if any)
     for (int i = 0; i < n; ++i) {
