@@ -77,6 +77,59 @@ inline void save_wsbm_bin(
     if (!out.good()) throw std::runtime_error("save_wsbm_bin: write error");
 }
 
+inline void save_wsbm_txt(
+    const std::string& filename,
+    const std::vector<node_t*>& A,
+    const std::vector<double>& Y,
+    const std::vector<unsigned int>& Z_true)
+{
+    const int N = static_cast<int>(A.size());
+    if (static_cast<int>(Y.size()) != N || static_cast<int>(Z_true.size()) != N) {
+        throw std::runtime_error("save_wsbm_txt: size mismatch among A, Y, Z_true");
+    }
+
+    // Collect undirected edges once (u < v)
+    std::vector<std::tuple<int,int,double>> edges;
+    edges.reserve(N * 4); // heuristic
+    for (int u = 0; u < N; ++u) {
+        for (const node_t* e = A[u]; e; e = e->next) {
+            const int v = e->id;
+            if (u < v) {
+                edges.emplace_back(u, v, e->weight);
+            }
+        }
+    }
+    const int M = static_cast<int>(edges.size());
+
+    std::ofstream out(filename);
+    if (!out) throw std::runtime_error("save_wsbm_txt: cannot open file for writing: " + filename);
+
+    // Write header
+    out << N << " " << M << "\n";
+
+    // Write edges
+    for (const auto& t : edges) {
+        out << std::get<0>(t) << " "
+            << std::get<1>(t) << " "
+            << std::get<2>(t) << "\n";
+    }
+
+    // Write Y
+    out << "# Y\n";
+    for (double y : Y) {
+        out << y << "\n";
+    }
+
+    // Write Z_true
+    out << "# Z_true\n";
+    for (unsigned int z : Z_true) {
+        out << z << "\n";
+    }
+
+    if (!out.good()) throw std::runtime_error("save_wsbm_txt: write error");
+}
+
+
 // ===== Load {A, Y, Z_true} from binary file =====
 inline void load_wsbm_bin(
     const std::string& filename,

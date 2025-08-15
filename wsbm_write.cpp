@@ -12,13 +12,14 @@ static void usage(const char* prog) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 5 || argc > 6) { usage(argv[0]); return 1; }
+    if (argc < 6 || argc > 7) { usage(argv[0]); return 1; }
 
     int n = std::atoi(argv[1]);
     int k = std::atoi(argv[2]);
     double pin = std::atof(argv[3]);
     double pout = std::atof(argv[4]);
     std::string out_path = (argc == 6) ? argv[5] : "wsbm_data.bin";
+    std::string out_txt_path = (argc == 7) ? argv[6] : "wsbm_data.txt";
 
     DistributionType attr_dist   = DistributionType::GAUSSIAN;
     DistributionType edge_dist   = DistributionType::GAUSSIAN;
@@ -45,6 +46,7 @@ int main(int argc, char** argv) {
         std::tie(A, Y, Z_true) = gen.generate_WSBM(false);
 
         save_wsbm_bin(out_path, A, Y, Z_true);
+        save_wsbm_txt(out_txt_path, A, Y, Z_true);
         std::cout << "Saved " << out_path
                   << " (N=" << A.size()
                   << ", |Y|=" << Y.size()
