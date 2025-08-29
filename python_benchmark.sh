@@ -11,7 +11,7 @@ PY_DIR="$ROOT_DIR/OriginalWork/BregmanTests"
 PY_RUN="$PY_DIR/my_benchmark.py"
 
 # CSV file
-CSV_FILE="$ROOT_DIR/benchmark_results.csv"
+CSV_FILE="$ROOT_DIR/python_benchmark_results.csv"
 rm -f "$CSV_FILE"
 
 # Parameters
